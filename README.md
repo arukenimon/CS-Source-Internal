@@ -5,6 +5,12 @@ Renders a D3D9 overlay by hooking `EndScene` and manipulates player input via a 
 
 ---
 
+## Preview
+
+![Screenshot](Screenshot.png)
+
+---
+
 ## How it works
 
 The DLL is injected into `hl2.exe` at runtime. On attach it spins up a thread that:
