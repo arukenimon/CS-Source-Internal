@@ -8,6 +8,8 @@
 #define GREEN D3DCOLOR_ARGB(255, 0, 255, 0)
 #define RED D3DCOLOR_ARGB(255, 255, 0, 0)
 
+enum AimMode { AIM_CROSSHAIR = 0, AIM_CLOSEST = 1 };
+
 struct Vector3
 {
 	float x, y, z;
@@ -16,6 +18,7 @@ struct Addresses
 {
 	DWORD clientBase = (DWORD)GetModuleHandleA("client.dll");
 	DWORD engineBase = (DWORD)GetModuleHandleA("engine.dll");
+	DWORD serverBase = (DWORD)GetModuleHandleA("server.dll");
 	DWORD baseOffset = 0x004E5B14;
 	DWORD viewMatrixOffset = 0x50;
 	DWORD engineOffset = 0x004FF224;
@@ -26,6 +29,11 @@ struct Addresses
 	DWORD dormant = 0xE8;
 	DWORD eye = 0xE8;
 	DWORD ViewAnglesAddr = 0x000A5904;
+
+
+
+	DWORD serverAddress = 0x004F615C;
+	DWORD serverXYZ[3] = { 0x308, 0x308+4, 0x308+8 };
 };
 
 struct ViewMatrix
@@ -108,6 +116,9 @@ public:
 	Vector3 GetBonePosition(int boneIndex)
 	{
 		DWORD boneBase = *(DWORD*)(this->baseAddress + addresses.bonePtr[0]);
+		if (!boneBase || IsBadReadPtr((void*)boneBase, sizeof(float) * 3))
+			return { 0.f, 0.f, 0.f };
+
 		DWORD bone = boneBase + (boneIndex * 0x30);
 
 		Vector3 pos;
@@ -263,6 +274,45 @@ void DrawBones(Entity& entity, ViewMatrix vm, int screenW, int screenH, ID3DXLin
 	DrawHeadCircle(entity, vm, screenW, screenH, pLine, color);
 }
 
+void DrawSnapline(Entity& entity, ViewMatrix vm, int screenW, int screenH, ID3DXLine* pLine, D3DCOLOR color)
+{
+	Vector3 worldPos = entity.GetPosition();
+	if (!isValid(worldPos)) return;
+
+	Vector3 screenPos;
+	if (!WorldToScreen(worldPos, screenPos, vm, screenW, screenH)) return;
+
+	DrawLine(screenW / 2.0f, (float)screenH, screenPos.x, screenPos.y, color, pLine);
+}
+
+void DrawESPBox(Entity& entity, ViewMatrix vm, int screenW, int screenH, ID3DXLine* pLine, D3DCOLOR color)
+{
+	Vector3 footWorld = entity.GetPosition();
+	Vector3 headWorld = entity.GetBonePosition(14);
+
+	if (!isValid(footWorld) || !isValid(headWorld)) return;
+
+	Vector3 footScreen, headScreen;
+	if (!WorldToScreen(footWorld, footScreen, vm, screenW, screenH)) return;
+	if (!WorldToScreen(headWorld, headScreen, vm, screenW, screenH)) return;
+
+	float height = footScreen.y - headScreen.y;
+	if (height <= 0) return;
+
+	float width = height * 0.4f;
+	float cx    = (footScreen.x + headScreen.x) * 0.5f;
+
+	float x1 = cx - width * 0.5f;
+	float x2 = cx + width * 0.5f;
+	float y1 = headScreen.y - 4.0f; // small padding above head
+	float y2 = footScreen.y;
+
+	DrawLine(x1, y1, x2, y1, color, pLine); // top
+	DrawLine(x1, y2, x2, y2, color, pLine); // bottom
+	DrawLine(x1, y1, x1, y2, color, pLine); // left
+	DrawLine(x2, y1, x2, y2, color, pLine); // right
+}
+
 void DrawFilledRect(float x, float y, float w, float h, D3DCOLOR color, ID3DXLine* pLine)
 {
 	pLine->SetWidth(h);
@@ -273,14 +323,24 @@ void DrawFilledRect(float x, float y, float w, float h, D3DCOLOR color, ID3DXLin
 	pLine->SetWidth(1.0f);
 }
 
-struct MenuItem { const char* label; bool* value; };
+struct MenuItem {
+	const char*  label;
+	bool*        bvalue;   // non-null for toggle items
+	float*       fvalue;   // non-null for float slider items
+	float        fstep;
+	float        fmin;
+	float        fmax;
+	int*         ivalue;   // non-null for cycle items
+	int          imax;     // number of options
+	const char** ilabels;  // display name for each option index
+};
 
 void DrawESPMenu(int sel, MenuItem* items, int count, LPD3DXFONT font, ID3DXLine* pLine)
 {
 	const float x = 20.0f, y = 50.0f, w = 200.0f, rowH = 18.0f, pad = 3.0f;
 	float totalH = rowH * (count + 2.0f);
 
-	DrawFilledRect(x, y, w, totalH, D3DCOLOR_ARGB(180, 15, 15, 15), pLine);
+	DrawFilledRect(x, y, w, totalH, D3DCOLOR_ARGB(180, 15, 15, 15), pLine); // This is the background rectangle for the menu, it uses a very dark color with some transparency (ARGB(180, 15, 15, 15)) to create a solid background that makes the menu items more readable against the game visuals. The rectangle is drawn at position (x, y) with width w and height totalH, which is calculated based on the number of menu items plus some extra space for the title and footer.
 
 	D3DCOLOR border = D3DCOLOR_ARGB(255, 80, 130, 255);
 	DrawLine(x,     y,          x + w, y,          border, pLine);
@@ -288,28 +348,52 @@ void DrawESPMenu(int sel, MenuItem* items, int count, LPD3DXFONT font, ID3DXLine
 	DrawLine(x,     y,          x,     y + totalH, border, pLine);
 	DrawLine(x + w, y,          x + w, y + totalH, border, pLine);
 
-	DrawString("  ESP Menu", (int)(x + 4), (int)(y + pad), 255, 120, 180, 255, font);
+	DrawString("  REV hacks", (int)(x + 4), (int)(y + pad), 255, 120, 180, 255, font);
 	DrawLine(x, y + rowH, x + w, y + rowH, border, pLine);
 
 	for (int i = 0; i < count; i++)
 	{
 		float iy = y + rowH + (i * rowH);
-		if (i == sel)
-			DrawFilledRect(x + 1, iy, w - 2, rowH, D3DCOLOR_ARGB(140, 60, 80, 200), pLine);
+		bool sep = !items[i].bvalue && !items[i].fvalue && !items[i].ivalue;
+
+		// This checks if the current item is selected (i == sel) and is not a separator (sep == false). If both conditions are true, it draws a filled rectangle behind the menu item to highlight it. The rectangle is slightly smaller than the full width of the menu (w - 2) to create a border effect, and it uses a semi-transparent color to indicate selection.
+		if (!sep && i == sel)
+			DrawFilledRect(x + 1, iy, w - 2, rowH, D3DCOLOR_ARGB(140, 60, 80, 200), pLine); // this is the highlight for the selected menu item, it is a color with some transparency (ARGB) that creates a blueish background behind the text of the selected item. The rectangle is drawn slightly smaller than the full width of the menu to create a border effect, and it is only drawn if the current item is not a separator (sep == false) to avoid highlighting separators.
 
 		char buf[64];
-		sprintf_s(buf, sizeof(buf), " %s %-14s [%s]",
-			(i == sel) ? ">" : " ",
-			items[i].label,
-			*items[i].value ? "ON" : "OFF");
-
-		int cr = *items[i].value ? 80  : 220;
-		int cg = *items[i].value ? 220 : 80;
-		DrawString(buf, (int)(x + 4), (int)(iy + pad), 255, cr, cg, 80, font);
+		int ca = 255, cr, cg, cb = 80;
+		// This checks if the current menu item is a separator (sep == true). If it is, it draws a filled rectangle with a different color to visually separate groups of menu items. The text for a separator is just the label with some padding, and it uses a lighter color (cr = 130, cg = 185, cb = 255) to distinguish it from regular items.
+		if (sep)
+		{
+			DrawFilledRect(x + 1, iy, w - 2, rowH, D3DCOLOR_ARGB(180, 15, 15, 15), pLine); // This uses the color ARGB(180, 15, 15, 15) to draw a filled rectangle behind the separator text. The color has an alpha value of 180 for some transparency, and it has a dark hue (15 red, 15 green, 15 blue) to visually distinguish it from regular menu items. This rectangle is drawn only for separator items (where sep == true) to create a visual separation between groups of menu items.
+			sprintf_s(buf, sizeof(buf), "  %s", items[i].label);
+			cr = 130; cg = 185; cb = 255;
+		}
+		else if (items[i].bvalue)
+		{
+			bool on = *items[i].bvalue;
+			sprintf_s(buf, sizeof(buf), " %s %-14s [%s]",
+				(i == sel) ? ">" : " ", items[i].label, on ? "ON" : "OFF");
+			cr = on ? 80 : 220;
+			cg = on ? 220 : 80;
+		}
+		else if (items[i].ivalue)
+		{
+			sprintf_s(buf, sizeof(buf), " %s %-14s [%s]",
+				(i == sel) ? ">" : " ", items[i].label, items[i].ilabels[*items[i].ivalue]);
+			cr = 200; cg = 200;
+		}
+		else
+		{
+			sprintf_s(buf, sizeof(buf), " %s %-14s [%.0f]",
+				(i == sel) ? ">" : " ", items[i].label, *items[i].fvalue);
+			cr = 220; cg = 200;
+		}
+		DrawString(buf, (int)(x + 4), (int)(iy + pad), ca, cr, cg, cb, font);
 	}
 
 	float hy = y + rowH * (count + 1.0f);
-	DrawString("  [UP/DN]  ENTER=Toggle", (int)(x + 4), (int)(hy + pad), 160, 160, 160, 160, font);
+	DrawString("  ENTER=Toggle  < >=Adjust", (int)(x + 4), (int)(hy + pad), 160, 160, 160, 160, font);
 }
 
 
@@ -334,13 +418,15 @@ inline bool  g_aimActive = false;
 inline float g_aimPitch  = 0.0f;
 inline float g_aimYaw    = 0.0f;
 
-void RunAimbot(Entity& localEnt, ViewMatrix vm, int screenW, int screenH, float fovRadius, float smooth = 1.0f)
+void RunAimbot(Entity& localEnt, ViewMatrix vm, int screenW, int screenH, float fovRadius, AimMode aimMode = AIM_CROSSHAIR, float smooth = 1.0f)
 {
 	float centerX = screenW / 2.0f;
 	float centerY = screenH / 2.0f;
 
-	float bestDist = fovRadius;
+	float bestScore  = (aimMode == AIM_CROSSHAIR) ? fovRadius : FLT_MAX;
 	int   bestTarget = -1;
+
+	Vector3 localPos = localEnt.GetEyePosition();
 
 	for (int i = 1; i < 64; i++)
 	{
@@ -359,13 +445,24 @@ void RunAimbot(Entity& localEnt, ViewMatrix vm, int screenW, int screenH, float 
 		Vector3 screenPos;
 		if (!WorldToScreen(headPos, screenPos, vm, screenW, screenH)) continue;
 
-		float dx = screenPos.x - centerX;
-		float dy = screenPos.y - centerY;
-		float dist = sqrtf(dx * dx + dy * dy);
-
-		if (dist < bestDist)
+		float score;
+		if (aimMode == AIM_CROSSHAIR)
 		{
-			bestDist = dist;
+			float dx = screenPos.x - centerX;
+			float dy = screenPos.y - centerY;
+			score = sqrtf(dx * dx + dy * dy);
+		}
+		else // AIM_CLOSEST
+		{
+			float dx = headPos.x - localPos.x;
+			float dy = headPos.y - localPos.y;
+			float dz = headPos.z - localPos.z;
+			score = sqrtf(dx * dx + dy * dy + dz * dz);
+		}
+
+		if (score < bestScore)
+		{
+			bestScore  = score;
 			bestTarget = i;
 		}
 	}
@@ -373,7 +470,6 @@ void RunAimbot(Entity& localEnt, ViewMatrix vm, int screenW, int screenH, float 
 	if (bestTarget == -1) return;
 
 	Entity target(bestTarget);
-	Vector3 localPos = localEnt.GetEyePosition();
 	Vector3 headPos  = target.GetBonePosition(14);
 
 	float dx     = headPos.x - localPos.x;
@@ -391,18 +487,63 @@ void RunAimbot(Entity& localEnt, ViewMatrix vm, int screenW, int screenH, float 
 	g_aimPitch  = current.m[0] + deltaPitch / smooth;
 	g_aimYaw    = current.m[1] + deltaYaw   / smooth;
 
-	if(target.GetHealth() <= 1 || target.GetHealth() > 100) {
-		g_aimActive = false;
-		return;
-	}
-
-	// check if there's alive target within fov before activating aimbot
-	if (bestDist > fovRadius) {
+	if (target.GetHealth() <= 1 || target.GetHealth() > 100) {
 		g_aimActive = false;
 		return;
 	}
 
 	g_aimActive = true;
+}
+
+void SetServerPosition(float x, float y, float z)
+{
+	Addresses addr;
+	if (!addr.serverBase) return;
+	DWORD ptr = *(DWORD*)(addr.serverBase + addr.serverAddress);
+	if (!ptr || IsBadWritePtr((void*)(ptr + addr.serverXYZ[0]), sizeof(float) * 3)) return;
+	*(float*)(ptr + addr.serverXYZ[0]) = x;
+	*(float*)(ptr + addr.serverXYZ[1]) = y;
+	*(float*)(ptr + addr.serverXYZ[2]) = z;
+}
+
+void RunTelekill(Entity& localEnt)
+{
+	Vector3 localPos = localEnt.GetEyePosition();
+
+	float bestDist   = FLT_MAX;
+	int   bestTarget = -1;
+
+	for (int i = 1; i < 64; i++)
+	{
+		Entity entity(i);
+		if (!entity.baseAddress || entity.baseAddress < 0x10000) continue;
+		if (IsBadReadPtr((void*)entity.baseAddress, sizeof(DWORD))) continue;
+
+		int health = entity.GetHealth();
+		if (health <= 1 || health > 100) continue;
+
+		if (localEnt.GetTeam() == entity.GetTeam()) continue;
+
+		Vector3 pos = entity.GetPosition();
+		if (!isValid(pos)) continue;
+
+		float dx = pos.x - localPos.x;
+		float dy = pos.y - localPos.y;
+		float dz = pos.z - localPos.z;
+		float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+		if (dist < bestDist)
+		{
+			bestDist   = dist;
+			bestTarget = i;
+		}
+	}
+
+	if (bestTarget == -1) return;
+
+	Entity target(bestTarget);
+	Vector3 targetPos = target.GetPosition();
+	SetServerPosition(targetPos.x, targetPos.y, targetPos.z);
 }
 
 // CS:S m_angEyeAngles offsets on the local player entity

@@ -29,7 +29,12 @@ bool g_espBones  = false;
 bool g_fovCircle = false;
 bool g_aimbot    = false;
 bool g_teamEsp   = false;
-int  g_menuSel   = 0;
+bool g_snaplines = false;
+bool g_espBox    = false;
+int  g_menuSel   = 1;
+int  g_aimMode   = AIM_CROSSHAIR;
+int  g_fovPreset = 0;
+bool g_telekill  = false;
 D3DVIEWPORT9 vp;
 HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 	if (!font)
@@ -38,28 +43,61 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 		D3DXCreateLine(pDevice, &pLine);
 
 	// --- menu key handling (edge-triggered) ---
-	static bool prevIns = false, prevUp = false, prevDown = false, prevEnter = false;
+	static bool prevIns = false, prevUp = false, prevDown = false, prevEnter = false, prevLeft = false, prevRight = false;
 	bool curIns   = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
 	bool curUp    = (GetAsyncKeyState(VK_UP)     & 0x8000) != 0;
 	bool curDown  = (GetAsyncKeyState(VK_DOWN)   & 0x8000) != 0;
 	bool curEnter = (GetAsyncKeyState(VK_RETURN) & 0x8000) != 0;
+	bool curLeft  = (GetAsyncKeyState(VK_LEFT)   & 0x8000) != 0;
+	bool curRight = (GetAsyncKeyState(VK_RIGHT)  & 0x8000) != 0;
 
+	static const char* aimModeLabels[]  = { "Crosshair", "Distance" };
+	static const char* fovPresetLabels[] = { "180", "250", "360", "450" };
+	static const float fovPresets[]      = { 180.0f, 250.0f, 360.0f, 450.0f };
 	static MenuItem menuItems[] = {
-		{ "Bones ESP",  &g_espBones  },
-		{ "FOV Circle", &g_fovCircle },
-		{ "Aimbot",     &g_aimbot    },
-		{ "Team ESP",   &g_teamEsp   },
+		{ "ESP",        nullptr,      nullptr,    0,    0,         0 },
+		{ "Bones ESP",  &g_espBones,  nullptr,    0,    0,         0 },
+		{ "ESP Box",    &g_espBox,    nullptr,    0,    0,         0 },
+		{ "Snaplines",  &g_snaplines, nullptr,    0,    0,         0 },
+		{ "Team ESP",   &g_teamEsp,   nullptr,    0,    0,         0 },
+		{ "Aimbot",     nullptr,      nullptr,    0,    0,         0 },
+		{ "Aimbot",     &g_aimbot,    nullptr,    0,    0,         0 },
+		{ "Aim Mode",   nullptr,      nullptr,    0,    0,         0, &g_aimMode,   2, aimModeLabels  },
+		{ "FOV Circle", &g_fovCircle, nullptr,    0,    0,         0 },
+		{ "FOV Radius", nullptr,      nullptr,    0,    0,         0, &g_fovPreset, 4, fovPresetLabels },
+		{ "Misc",       nullptr,      nullptr,    0,    0,         0 },
+		{ "Telekill",   &g_telekill,  nullptr,    0,    0,         0 },
 	};
 	static const int menuItemCount = sizeof(menuItems) / sizeof(menuItems[0]);
 
 	if (curIns && !prevIns) g_menuOpen = !g_menuOpen;
 	if (g_menuOpen)
 	{
-		if (curUp    && !prevUp)    g_menuSel = (g_menuSel - 1 + menuItemCount) % menuItemCount;
-		if (curDown  && !prevDown)  g_menuSel = (g_menuSel + 1) % menuItemCount;
-		if (curEnter && !prevEnter) *menuItems[g_menuSel].value = !*menuItems[g_menuSel].value;
+		if (curUp && !prevUp) {
+			do { g_menuSel = (g_menuSel - 1 + menuItemCount) % menuItemCount; }
+			while (!menuItems[g_menuSel].bvalue && !menuItems[g_menuSel].fvalue && !menuItems[g_menuSel].ivalue);
+		}
+		if (curDown && !prevDown) {
+			do { g_menuSel = (g_menuSel + 1) % menuItemCount; }
+			while (!menuItems[g_menuSel].bvalue && !menuItems[g_menuSel].fvalue && !menuItems[g_menuSel].ivalue);
+		}
+
+		MenuItem& item = menuItems[g_menuSel];
+		if (item.bvalue && curEnter && !prevEnter) *item.bvalue = !*item.bvalue;
+		if (item.fvalue)
+		{
+			if (curLeft  && !prevLeft)  *item.fvalue = max(item.fmin, *item.fvalue - item.fstep);
+			if (curRight && !prevRight) *item.fvalue = min(item.fmax, *item.fvalue + item.fstep);
+		}
+		if (item.ivalue)
+		{
+			if (curLeft  && !prevLeft)  *item.ivalue = (*item.ivalue - 1 + item.imax) % item.imax;
+			if (curRight && !prevRight) *item.ivalue = (*item.ivalue + 1) % item.imax;
+		}
 	}
-	prevIns = curIns; prevUp = curUp; prevDown = curDown; prevEnter = curEnter;
+	prevIns = curIns; prevUp = curUp; prevDown = curDown; prevEnter = curEnter; prevLeft = curLeft; prevRight = curRight;
+
+	fovRadius = fovPresets[g_fovPreset];
 
 	ViewMatrix viewMatrix = GetViewMatrix();
 
@@ -68,13 +106,15 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 	int screenH = (int)vp.Height;
 
 	Entity localEnt(0);
+	if (!localEnt.baseAddress || IsBadReadPtr((void*)localEnt.baseAddress, sizeof(DWORD)))
+		return pEndScene(pDevice);
 
-	if (g_espBones)
+	if (g_espBones || g_snaplines || g_espBox)
 	{
 		for (int i = 1; i < 64; i++)
 		{
 			Entity entity(i);
-			if (!entity.baseAddress) continue;
+			if (!entity.baseAddress || entity.baseAddress < 0x10000) continue;
 			if (IsBadReadPtr((void*)entity.baseAddress, sizeof(DWORD))) continue;
 			int health = entity.GetHealth();
 			if (health <= 1 || health > 100) continue;
@@ -82,14 +122,20 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 			bool teammate = (localEnt.GetTeam() == entity.GetTeam());
 			if (!g_teamEsp && teammate) continue;
 
-			DrawBones(entity, viewMatrix, screenW, screenH, pLine, teammate ? GREEN : RED);
+			D3DCOLOR color = teammate ? GREEN : RED;
+			if (g_espBones)   DrawBones(entity, viewMatrix, screenW, screenH, pLine, color);
+			if (g_espBox)     DrawESPBox(entity, viewMatrix, screenW, screenH, pLine, color);
+			if (g_snaplines)  DrawSnapline(entity, viewMatrix, screenW, screenH, pLine, color);
 		}
 	}
 
 	if (g_aimbot && (GetAsyncKeyState(VK_LSHIFT) & 0x8000))
-		RunAimbot(localEnt, viewMatrix, screenW, screenH, fovRadius);
+		RunAimbot(localEnt, viewMatrix, screenW, screenH, fovRadius, (AimMode)g_aimMode);
 	else
 		g_aimActive = false;
+
+	if (g_telekill && (GetAsyncKeyState('F') & 0x8000))
+		RunTelekill(localEnt);
 
 	if (g_fovCircle)
 		DrawCircle(screenW / 2.0f, screenH / 2.0f, fovRadius, 64, D3DCOLOR_ARGB(180, 255, 255, 255), pLine);
