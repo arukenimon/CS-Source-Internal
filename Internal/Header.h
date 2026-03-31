@@ -9,7 +9,8 @@
 #define RED D3DCOLOR_ARGB(255, 255, 0, 0)
 
 enum AimMode { AIM_CROSSHAIR = 0, AIM_CLOSEST = 1 };
-
+void SetServerPosition(float x, float y, float z);
+class Entity;
 struct Vector3
 {
 	float x, y, z;
@@ -26,12 +27,12 @@ struct Addresses
 	DWORD XYZ[3] = { 0x258, 0x25C,0x260 };
 	DWORD bonePtr[1] = { 0x570 };
 	DWORD team = 0x94;
-	DWORD dormant = 0xE8;
+	DWORD dormant = 0x60;
 	DWORD eye = 0xE8;
 	DWORD ViewAnglesAddr = 0x000A5904;
+	DWORD VelocityXYZ = 0x218; // + 0x04, + 0x08 
 
-
-
+	DWORD serverHealthOffset = 0xe4;
 	DWORD serverAddress = 0x004F615C;
 	DWORD serverXYZ[3] = { 0x308, 0x308+4, 0x308+8 };
 };
@@ -42,21 +43,24 @@ struct ViewMatrix
 
 	float operator[](int i) const { return m[i]; }
 };
-
+struct ViewAngles {
+	float m[2];
+	float operator[](int i) const { return m[i]; }
+};
+struct Velocity {
+	float m[3];
+	float operator[](int i) const { return m[i]; }
+};
 // returns the view matrix from the engine module (16 floats = 64 bytes)
 ViewMatrix GetViewMatrix()
 {
 	Addresses addr;
 	DWORD ptr = *(DWORD*)(addr.clientBase + addr.engineOffset);
 	ViewMatrix vm;
-	memcpy(vm.m, (void*)(ptr + addr.viewMatrixOffset), sizeof(float) * 16);
+	memcpy(vm.m, (void*)(ptr + addr.viewMatrixOffset), sizeof(float) * 16); // This copies 16 floats (64 bytes) from the address (ptr + addr.viewMatrixOffset) into the vm.m array. The source address is calculated by taking the value at (addr.clientBase + addr.engineOffset) and adding the viewMatrixOffset to it, which should point to the location of the view matrix in memory. The memcpy function is used to perform this copy operation, and it ensures that all 16 floats are copied correctly into the ViewMatrix structure.
 	return vm;
 }
 
-struct ViewAngles {
-	float m[2];
-	float operator[](int i) const { return m[i]; }
-};
 
 ViewAngles GetViewAngles()
 {
@@ -66,6 +70,11 @@ ViewAngles GetViewAngles()
 	memcpy(va.m, (void*)(ptr + 0x0), sizeof(float) * 2);
 	return va;
 }
+
+
+
+
+
 
 class Entity
 {
@@ -83,9 +92,11 @@ public:
 		return *(int*)(baseAddress + addresses.health);
 	}
 
-	int IsDormant()
+	bool IsDormant()
 	{
-		return *(int*)(baseAddress + addresses.dormant); // this is a common pattern for checking if an entity is dormant (not active in the game world), returns true if dormant, false if active
+		Entity localEnt(0);
+		float val = *(float*)(baseAddress + addresses.dormant);
+		return val != *(float*)(localEnt.baseAddress + addresses.dormant); // This compares the dormant value of the current entity with the local player's dormant value. If they are different, it indicates that the entity is dormant (not active in the game world), and the function returns true. If they are the same, it means the entity is not dormant, and the function returns false. This is a common technique used in game hacking to determine if an entity is currently active or not.
 	}
 
 	Vector3 GetPosition()
@@ -104,6 +115,13 @@ public:
 		return *(int*)(baseAddress + addresses.team);
 	}
 
+	Velocity GetVelocity()
+	{
+		Addresses addr;
+		Velocity vel;
+		memcpy(vel.m, (void*)(this->baseAddress + addr.VelocityXYZ), sizeof(float) * 3);
+		return vel;
+	}
 
 	Vector3 GetEyePosition()
 	{
@@ -189,6 +207,19 @@ void DrawBoneNumbers(Entity& entity, ViewMatrix vm, int screenW, int screenH, LP
 			DrawString(buf, (int)screenPos.x, (int)screenPos.y, 255, 255, 255, 255, font);
 		}
 	}
+}
+
+void DrawEntityIndex(Entity& entity, int index, ViewMatrix vm, int screenW, int screenH, LPD3DXFONT font)
+{
+	Vector3 headWorld = entity.GetBonePosition(14);
+	if (!isValid(headWorld)) return;
+
+	Vector3 screenPos;
+	if (!WorldToScreen(headWorld, screenPos, vm, screenW, screenH)) return;
+
+	char buf[8];
+	sprintf_s(buf, sizeof(buf), "%d", index);
+	DrawString(buf, (int)screenPos.x - 4, (int)screenPos.y - 16, 255, 255, 255, 255, font);
 }
 
 void DrawLine(float x1, float y1, float x2, float y2, D3DCOLOR color, ID3DXLine* pLine)
@@ -414,9 +445,10 @@ float NormalizeAngle(float angle)
 
 typedef void(__thiscall* CreateMoveFn)(void*, int, float, bool);
 inline CreateMoveFn origCreateMove = nullptr;
-inline bool  g_aimActive = false;
-inline float g_aimPitch  = 0.0f;
-inline float g_aimYaw    = 0.0f;
+inline bool  g_aimActive       = false; // inline means this variable is defined in the header but only instantiated once across all translation units, preventing linker errors. This allows us to easily share the state of whether the aimbot is active or not across different source files that include this header.
+inline float g_aimPitch        = 0.0f;
+inline float g_aimYaw          = 0.0f;
+inline float g_speedMultiplier = 1.0f;
 
 void RunAimbot(Entity& localEnt, ViewMatrix vm, int screenW, int screenH, float fovRadius, AimMode aimMode = AIM_CROSSHAIR, float smooth = 1.0f)
 {
@@ -434,6 +466,8 @@ void RunAimbot(Entity& localEnt, ViewMatrix vm, int screenW, int screenH, float 
 		if (!entity.baseAddress) continue;
 		if (IsBadReadPtr((void*)entity.baseAddress, sizeof(DWORD))) continue;
 
+		if (entity.IsDormant()) continue;
+
 		int health = entity.GetHealth();
 		if (health <= 1 || health > 100) continue;
 
@@ -442,12 +476,11 @@ void RunAimbot(Entity& localEnt, ViewMatrix vm, int screenW, int screenH, float 
 		Vector3 headPos = entity.GetBonePosition(14);
 		if (!isValid(headPos)) continue;
 
-		Vector3 screenPos;
-		if (!WorldToScreen(headPos, screenPos, vm, screenW, screenH)) continue;
-
 		float score;
 		if (aimMode == AIM_CROSSHAIR)
 		{
+			Vector3 screenPos;
+			if (!WorldToScreen(headPos, screenPos, vm, screenW, screenH)) continue;
 			float dx = screenPos.x - centerX;
 			float dy = screenPos.y - centerY;
 			score = sqrtf(dx * dx + dy * dy);
@@ -495,16 +528,6 @@ void RunAimbot(Entity& localEnt, ViewMatrix vm, int screenW, int screenH, float 
 	g_aimActive = true;
 }
 
-void SetServerPosition(float x, float y, float z)
-{
-	Addresses addr;
-	if (!addr.serverBase) return;
-	DWORD ptr = *(DWORD*)(addr.serverBase + addr.serverAddress);
-	if (!ptr || IsBadWritePtr((void*)(ptr + addr.serverXYZ[0]), sizeof(float) * 3)) return;
-	*(float*)(ptr + addr.serverXYZ[0]) = x;
-	*(float*)(ptr + addr.serverXYZ[1]) = y;
-	*(float*)(ptr + addr.serverXYZ[2]) = z;
-}
 
 void RunTelekill(Entity& localEnt)
 {
@@ -518,6 +541,8 @@ void RunTelekill(Entity& localEnt)
 		Entity entity(i);
 		if (!entity.baseAddress || entity.baseAddress < 0x10000) continue;
 		if (IsBadReadPtr((void*)entity.baseAddress, sizeof(DWORD))) continue;
+
+		if (entity.IsDormant()) continue;
 
 		int health = entity.GetHealth();
 		if (health <= 1 || health > 100) continue;
@@ -546,6 +571,68 @@ void RunTelekill(Entity& localEnt)
 	SetServerPosition(targetPos.x, targetPos.y, targetPos.z);
 }
 
+void SetServerPosition(float x, float y, float z)
+{
+	Addresses addr;
+	if (!addr.serverBase) return;
+	DWORD ptr = *(DWORD*)(addr.serverBase + addr.serverAddress);
+	if (!ptr || IsBadWritePtr((void*)(ptr + addr.serverXYZ[0]), sizeof(float) * 3)) return;
+	*(float*)(ptr + addr.serverXYZ[0]) = x;
+	*(float*)(ptr + addr.serverXYZ[1]) = y;
+	*(float*)(ptr + addr.serverXYZ[2]) = z;
+}
+
+void RunGodMode()
+{
+	Addresses addr;
+	if (!addr.serverBase) return;
+	DWORD sptr = *(DWORD*)(addr.serverBase + addr.serverAddress);
+	if (!sptr || IsBadWritePtr((void*)(sptr + addr.serverHealthOffset), sizeof(int))) return;
+	*(int*)(sptr + addr.serverHealthOffset) = 100;
+}
+
+void RunSpeedhack(Entity& localEnt, float multiplier)
+{
+	if (!localEnt.baseAddress || IsBadReadPtr((void*)localEnt.baseAddress, sizeof(DWORD))) return;
+
+	Addresses addr;
+	if (!addr.serverBase) return;
+
+	DWORD sptr = *(DWORD*)(addr.serverBase + addr.serverAddress);
+	if (!sptr || IsBadWritePtr((void*)(sptr + addr.VelocityXYZ), sizeof(float) * 2)) return;
+
+	float* vxPtr = (float*)(sptr + addr.VelocityXYZ);
+	float* vyPtr = (float*)(sptr + addr.VelocityXYZ + 0x04);
+
+	static float lastVx = 0.0f;
+	static float lastVy = 0.0f;
+
+	float vx = *vxPtr;
+	float vy = *vyPtr;
+
+	printf("Current velocity: %.2f, %.2f\n", vx, vy);
+
+	float speed = sqrtf(vx * vx + vy * vy);
+
+	if (speed < 1.0f) return;
+
+	float baseMaxSpeed = 300.0f;
+
+
+	// only boost if below normal max (i.e., accelerating)
+	if (speed < baseMaxSpeed)
+	{
+		float nx = vx / speed;
+		float ny = vy / speed;
+
+		float newSpeed = speed * multiplier;
+
+		*vxPtr = nx * newSpeed;
+		*vyPtr = ny * newSpeed;
+	}
+
+}
+ 
 // CS:S m_angEyeAngles offsets on the local player entity
 #define EYE_PITCH_OFFSET 0x12C
 #define EYE_YAW_OFFSET   0x130
@@ -553,15 +640,19 @@ void RunTelekill(Entity& localEnt)
 void __fastcall hookedCreateMove(void* thisptr, void* /*edx*/, int seqnum, float frametime, bool active)
 {
 	origCreateMove(thisptr, seqnum, frametime, active);
-	if (!g_aimActive) return;
-
 
 	Entity local(0);
 	if (!local.baseAddress || IsBadReadPtr((void*)local.baseAddress, sizeof(DWORD))) return;
-	Addresses addr;
-	DWORD ptr = *(DWORD*)(addr.engineBase + addr.ViewAnglesAddr);
-	*(float*)(ptr + 0x0) = g_aimPitch;
-	*(float*)(ptr + 0x4) = g_aimYaw;
+
+	/*if (g_speedMultiplier > 1.0f)
+		RunSpeedhack(local, g_speedMultiplier, frametime);*/
+
+	if (g_aimActive) {
+		Addresses addr;
+		DWORD ptr = *(DWORD*)(addr.engineBase + addr.ViewAnglesAddr);
+		*(float*)(ptr + 0x0) = g_aimPitch;
+		*(float*)(ptr + 0x4) = g_aimYaw;
+	}
 }
 
 // This function locates the CreateMove function in the client.dll's vtable and hooks it using Detours

@@ -31,10 +31,14 @@ bool g_aimbot    = false;
 bool g_teamEsp   = false;
 bool g_snaplines = false;
 bool g_espBox    = false;
+bool g_showIndex = false;
 int  g_menuSel   = 1;
 int  g_aimMode   = AIM_CROSSHAIR;
 int  g_fovPreset = 0;
 bool g_telekill  = false;
+bool g_speedhack  = false;
+int  g_speedPreset = 0;
+bool g_godMode     = false;
 D3DVIEWPORT9 vp;
 HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 	if (!font)
@@ -51,22 +55,29 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 	bool curLeft  = (GetAsyncKeyState(VK_LEFT)   & 0x8000) != 0;
 	bool curRight = (GetAsyncKeyState(VK_RIGHT)  & 0x8000) != 0;
 
-	static const char* aimModeLabels[]  = { "Crosshair", "Distance" };
+	static const char* aimModeLabels[]   = { "Crosshair", "Distance" };
 	static const char* fovPresetLabels[] = { "180", "250", "360", "450" };
 	static const float fovPresets[]      = { 180.0f, 250.0f, 360.0f, 450.0f };
+	static const char* speedLabels[]     = { "1.5x", "2.0x", "2.5x", "3.0x", "20x" };
+	static const float speedValues[]     = { 1.5f, 2.0f, 2.5f, 3.0f, 20.0f };
 	static MenuItem menuItems[] = {
 		{ "ESP",        nullptr,      nullptr,    0,    0,         0 },
 		{ "Bones ESP",  &g_espBones,  nullptr,    0,    0,         0 },
 		{ "ESP Box",    &g_espBox,    nullptr,    0,    0,         0 },
 		{ "Snaplines",  &g_snaplines, nullptr,    0,    0,         0 },
 		{ "Team ESP",   &g_teamEsp,   nullptr,    0,    0,         0 },
+		{ "Index",      &g_showIndex, nullptr,    0,    0,         0 },
 		{ "Aimbot",     nullptr,      nullptr,    0,    0,         0 },
 		{ "Aimbot",     &g_aimbot,    nullptr,    0,    0,         0 },
-		{ "Aim Mode",   nullptr,      nullptr,    0,    0,         0, &g_aimMode,   2, aimModeLabels  },
+		{ "Aim Mode",   nullptr,      nullptr,    0,    0,         0, &g_aimMode,    2, aimModeLabels  },
 		{ "FOV Circle", &g_fovCircle, nullptr,    0,    0,         0 },
-		{ "FOV Radius", nullptr,      nullptr,    0,    0,         0, &g_fovPreset, 4, fovPresetLabels },
+		{ "FOV Radius", nullptr,      nullptr,    0,    0,         0, &g_fovPreset,  4, fovPresetLabels },
+		{ "Movement",   nullptr,      nullptr,    0,    0,         0 },
+		{ "Speedhack",  &g_speedhack, nullptr,    0,    0,         0 },
+		{ "Speed",      nullptr,      nullptr,    0,    0,         0, &g_speedPreset, 5, speedLabels    },
 		{ "Misc",       nullptr,      nullptr,    0,    0,         0 },
 		{ "Telekill",   &g_telekill,  nullptr,    0,    0,         0 },
+		{ "God Mode",   &g_godMode,   nullptr,    0,    0,         0 },
 	};
 	static const int menuItemCount = sizeof(menuItems) / sizeof(menuItems[0]);
 
@@ -109,24 +120,35 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 	if (!localEnt.baseAddress || IsBadReadPtr((void*)localEnt.baseAddress, sizeof(DWORD)))
 		return pEndScene(pDevice);
 
-	if (g_espBones || g_snaplines || g_espBox)
+	if (g_espBones || g_snaplines || g_espBox || g_showIndex)
 	{
-		for (int i = 1; i < 64; i++)
+		for (int i = 0; i < 64; i++)
 		{
 			Entity entity(i);
 			if (!entity.baseAddress || entity.baseAddress < 0x10000) continue;
 			if (IsBadReadPtr((void*)entity.baseAddress, sizeof(DWORD))) continue;
+			if (entity.IsDormant()) continue;
 			int health = entity.GetHealth();
+
+
 			if (health <= 1 || health > 100) continue;
 
 			bool teammate = (localEnt.GetTeam() == entity.GetTeam());
 			if (!g_teamEsp && teammate) continue;
 
 			D3DCOLOR color = teammate ? GREEN : RED;
-			if (g_espBones)   DrawBones(entity, viewMatrix, screenW, screenH, pLine, color);
-			if (g_espBox)     DrawESPBox(entity, viewMatrix, screenW, screenH, pLine, color);
-			if (g_snaplines)  DrawSnapline(entity, viewMatrix, screenW, screenH, pLine, color);
+			if (g_espBones)    DrawBones(entity, viewMatrix, screenW, screenH, pLine, color);
+			if (g_espBox)      DrawESPBox(entity, viewMatrix, screenW, screenH, pLine, color);
+			if (g_snaplines)   DrawSnapline(entity, viewMatrix, screenW, screenH, pLine, color);
+			if (g_showIndex)   DrawEntityIndex(entity, i, viewMatrix, screenW, screenH, font);
 		}
+	}
+
+	if(GetAsyncKeyState(VK_NUMPAD5) & 1) {
+		SetServerPosition(480.362f, 2485.217f, -110.20211f);
+	}
+	if (GetAsyncKeyState(VK_NUMPAD6) & 1) {
+		SetServerPosition(-529.8451f, -792.0601f, 132.0478f);
 	}
 
 	if (g_aimbot && (GetAsyncKeyState(VK_LSHIFT) & 0x8000))
@@ -137,11 +159,25 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 	if (g_telekill && (GetAsyncKeyState('F') & 0x8000))
 		RunTelekill(localEnt);
 
+	if (g_godMode)
+		RunGodMode();
+
+	g_speedMultiplier = g_speedhack ? speedValues[g_speedPreset] : 1.0f;
+
+	if (g_speedhack) {
+		if (g_speedMultiplier > 1.0f)
+			RunSpeedhack(localEnt, g_speedMultiplier);
+	}
+
 	if (g_fovCircle)
 		DrawCircle(screenW / 2.0f, screenH / 2.0f, fovRadius, 64, D3DCOLOR_ARGB(180, 255, 255, 255), pLine);
 
 	if (g_menuOpen)
 		DrawESPMenu(g_menuSel, menuItems, menuItemCount, font, pLine);
+
+	Velocity vel = localEnt.GetVelocity();
+
+	//printf("Velocity: %.2f, %.2f, %.2f\n", vel[0], vel[1], vel[2]);
 
 	return pEndScene(pDevice);
 }
