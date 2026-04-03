@@ -33,12 +33,13 @@ bool g_snaplines = false;
 bool g_espBox    = false;
 bool g_showIndex = false;
 int  g_menuSel   = 1;
-int  g_aimMode   = AIM_CROSSHAIR;
+int  g_aimMode   = AIM_CLOSEST;
 int  g_fovPreset = 0;
-bool g_telekill  = false;
+bool g_telekill  = true;
 bool g_speedhack  = false;
 int  g_speedPreset = 0;
 bool g_godMode     = false;
+bool g_fastKnife   = false;
 D3DVIEWPORT9 vp;
 HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 	if (!font)
@@ -55,7 +56,7 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 	bool curLeft  = (GetAsyncKeyState(VK_LEFT)   & 0x8000) != 0;
 	bool curRight = (GetAsyncKeyState(VK_RIGHT)  & 0x8000) != 0;
 
-	static const char* aimModeLabels[]   = { "Crosshair", "Distance" };
+	static const char* aimModeLabels[]   = {  "Distance","Crosshair" };
 	static const char* fovPresetLabels[] = { "180", "250", "360", "450" };
 	static const float fovPresets[]      = { 180.0f, 250.0f, 360.0f, 450.0f };
 	static const char* speedLabels[]     = { "1.5x", "2.0x", "2.5x", "3.0x", "20x" };
@@ -72,6 +73,8 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 		{ "Aim Mode",   nullptr,      nullptr,    0,    0,         0, &g_aimMode,    2, aimModeLabels  },
 		{ "FOV Circle", &g_fovCircle, nullptr,    0,    0,         0 },
 		{ "FOV Radius", nullptr,      nullptr,    0,    0,         0, &g_fovPreset,  4, fovPresetLabels },
+		{ "Weapon",     nullptr,      nullptr,    0,    0,         0 },
+		{ "Fast Knife", &g_fastKnife, nullptr,    0,    0,         0 },
 		{ "Movement",   nullptr,      nullptr,    0,    0,         0 },
 		{ "Speedhack",  &g_speedhack, nullptr,    0,    0,         0 },
 		{ "Speed",      nullptr,      nullptr,    0,    0,         0, &g_speedPreset, 5, speedLabels    },
@@ -122,7 +125,7 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 
 	if (g_espBones || g_snaplines || g_espBox || g_showIndex)
 	{
-		for (int i = 0; i < 64; i++)
+		for (int i = 1; i < 64; i++)
 		{
 			Entity entity(i);
 			if (!entity.baseAddress || entity.baseAddress < 0x10000) continue;
@@ -141,6 +144,7 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 			if (g_espBox)      DrawESPBox(entity, viewMatrix, screenW, screenH, pLine, color);
 			if (g_snaplines)   DrawSnapline(entity, viewMatrix, screenW, screenH, pLine, color);
 			if (g_showIndex)   DrawEntityIndex(entity, i, viewMatrix, screenW, screenH, font);
+			///DrawBoneNumbers(entity, viewMatrix, screenW, screenH, font);
 		}
 	}
 
@@ -162,6 +166,9 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 	if (g_godMode)
 		RunGodMode();
 
+	if (g_fastKnife)
+		RunFastKnife(localEnt);
+
 	g_speedMultiplier = g_speedhack ? speedValues[g_speedPreset] : 1.0f;
 
 	if (g_speedhack) {
@@ -176,8 +183,6 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 		DrawESPMenu(g_menuSel, menuItems, menuItemCount, font, pLine);
 
 	Velocity vel = localEnt.GetVelocity();
-
-	//printf("Velocity: %.2f, %.2f, %.2f\n", vel[0], vel[1], vel[2]);
 
 	return pEndScene(pDevice);
 }
@@ -222,8 +227,10 @@ DWORD WINAPI Menue(HINSTANCE hModule) {
     FILE* fp;
     freopen_s(&fp, "CONOUT$", "w", stdout); //sets cout to be used with our newly created console
 
-    hookEndScene();
-    hookCreateMove();
+	hookEndScene();
+	hookCreateMove();
+	InitEntityList();
+	InitServerTools();
 
     while (true) {
         Sleep(50);
