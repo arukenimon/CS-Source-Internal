@@ -168,12 +168,42 @@ inline void RunFastKnife(Entity& localEnt)
 	// Only apply to the knife
 	const char* pClassName = *(const char**)(serverWeapon + WEAPON_CLASSNAME_OFFSET);
 	if (!pClassName || IsBadReadPtr(pClassName, 1)) return;
-	if (strcmp(pClassName, "weapon_knife") != 0) return;
+	if (strcmp(pClassName, WEAPON_CLASSNAME_KNIFE) != 0) return;
 
 	if (IsBadWritePtr((void*)(serverWeapon + addr.sv_m_flNextPrimaryAttack), sizeof(float) * 3)) return;
 	*(float*)(serverWeapon + addr.sv_m_flNextPrimaryAttack)   = 0.0f;
 	*(float*)(serverWeapon + addr.sv_m_flNextSecondaryAttack) = 0.0f;
 	*(float*)(serverWeapon + addr.sv_m_flTimeWeaponIdle)      = 0.0f;
+}
+
+inline void RunRapidFire(Entity& localEnt)
+{
+	Addresses addr;
+
+	DWORD weaponHandle = *(DWORD*)(localEnt.baseAddress + addr.m_hActiveWeapon);
+	if (!weaponHandle || weaponHandle == 0xFFFFFFFF) return;
+
+	int weaponIndex = weaponHandle & 0xFFF;
+	if (weaponIndex <= 0 || weaponIndex >= 2048) return;
+
+	// Look up the weapon entity on the server via gEntList.m_EntPtrArray[weaponIndex].m_pEntity
+	DWORD serverWeapon = *(DWORD*)(addr.serverBase + addr.serverEntList + weaponIndex * 0x10);
+	if (!serverWeapon || IsBadReadPtr((void*)serverWeapon, sizeof(DWORD))) return;
+
+	printf("Server weapon entity: 0x%X\n", serverWeapon);
+
+	// Only apply to the USP
+	const char* pClassName = *(const char**)(serverWeapon + WEAPON_CLASSNAME_OFFSET);
+	if (!pClassName || IsBadReadPtr(pClassName, 1)) return;
+	if (strcmp(pClassName, WEAPON_CLASSNAME_USP) != 0) return;
+
+	
+
+	if (IsBadWritePtr((void*)(serverWeapon + addr.sv_m_flNextPrimaryAttack), sizeof(float) * 3)) return;
+	*(float*)(serverWeapon + addr.sv_m_flNextPrimaryAttack)   = 0.0f;
+	*(float*)(serverWeapon + addr.sv_m_flNextSecondaryAttack) = 0.0f;
+	*(float*)(serverWeapon + addr.sv_m_flTimeWeaponIdle)      = 0.0f;
+	*(float*)(serverWeapon + addr.m_flLastFire)               = 0.0f;
 }
 
 inline void RunGodMode()

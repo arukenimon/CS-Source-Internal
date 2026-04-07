@@ -25,6 +25,7 @@ struct Addresses
 	DWORD sv_m_flNextPrimaryAttack   = 0x46C;
 	DWORD sv_m_flNextSecondaryAttack = 0x470;
 	DWORD sv_m_flTimeWeaponIdle      = 0x474;
+	DWORD m_flLastFire = 0x5a4;
 
 	DWORD serverHealthOffset = 0xE4;
 	DWORD serverAddress      = 0x004F615C; // server-side local player entity pointer

@@ -40,6 +40,7 @@ bool g_speedhack  = false;
 int  g_speedPreset = 0;
 bool g_godMode     = false;
 bool g_fastKnife   = false;
+bool g_rapidFire   = false;
 D3DVIEWPORT9 vp;
 HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 	if (!font)
@@ -75,6 +76,7 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 		{ "FOV Radius", nullptr,      nullptr,    0,    0,         0, &g_fovPreset,  4, fovPresetLabels },
 		{ "Weapon",     nullptr,      nullptr,    0,    0,         0 },
 		{ "Fast Knife", &g_fastKnife, nullptr,    0,    0,         0 },
+		{ "Rapid Fire", &g_rapidFire, nullptr,    0,    0,         0 },
 		{ "Movement",   nullptr,      nullptr,    0,    0,         0 },
 		{ "Speedhack",  &g_speedhack, nullptr,    0,    0,         0 },
 		{ "Speed",      nullptr,      nullptr,    0,    0,         0, &g_speedPreset, 5, speedLabels    },
@@ -168,6 +170,9 @@ HRESULT __stdcall hookedEndScene(IDirect3DDevice9* pDevice) {
 
 	if (g_fastKnife)
 		RunFastKnife(localEnt);
+
+	if (g_rapidFire)
+		RunRapidFire(localEnt);
 
 	g_speedMultiplier = g_speedhack ? speedValues[g_speedPreset] : 1.0f;
 
